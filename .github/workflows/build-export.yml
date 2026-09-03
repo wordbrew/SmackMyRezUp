@@ -44,8 +44,25 @@ jobs:
           if (-not (Test-Path $h)) { throw "nvsdk_ngx.h missing; the SDK layout moved" }
           "found $h"
 
+      # WHICH Visual Studio the runner has, recorded so a future failure is
+      # one line to diagnose rather than another round trip.
+      - name: Report the toolchain
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            & $vswhere -latest -products * -format value `
+              -property catalog_productDisplayVersion, installationPath, displayName
+          } else { "vswhere not present" }
+          cmake --version | Select-Object -First 1
+
+      # NO -G. The generator was pinned to "Visual Studio 17 2022" and the
+      # runner image has moved past it -- CMake reported "could not find any
+      # instance of Visual Studio" against a machine that has one. Letting CMake
+      # choose means the workflow follows the image instead of pinning to a
+      # version that ages out.
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -S . -B build -A x64
 
       # Only the exporter. The player target is a 186 KB translation unit we do
       # not need, and building it here would couple CI to the GUI's own deps.
