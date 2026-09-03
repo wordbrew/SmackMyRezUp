@@ -1,0 +1,85 @@
+name: build exporter
+
+# WHY THIS EXISTS
+#   Building needs Visual Studio 2022 with the C++ workload, MSVC, the Windows
+#   SDK and CMake. The machine this fork is driven from has VS2022 Community
+#   with NO C++ toolset, and adding it is a multi-gigabyte install. GitHub's
+#   windows-latest runners ship all of it, so the toolchain requirement moves
+#   off the workstation entirely.
+#
+# WHY IT CAN BUILD WITHOUT THE NEURAL RUNTIME
+#   build.ps1 hard-fails when nvngx_dlssnr.dll is absent, but that check stages
+#   the DLL into payload\ -- a packaging step. Nothing links against it; the app
+#   loads it at run time. So CI configures and builds with CMake directly and
+#   leaves the runtime out. Drop your own copy beside the exe afterwards.
+#
+#   Consequence, stated plainly: the artifact here is NOT redistributable as a
+#   working neural renderer, and deliberately so. It is the exporter binary and
+#   nothing else.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-export.yml'
+
+jobs:
+  export:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Shallow: we want the headers and the x64 import library, not history.
+      - name: Fetch the NVIDIA DLSS SDK
+        run: git clone --depth 1 https://github.com/NVIDIA/DLSS.git external/DLSS
+
+      - name: Check the SDK landed where CMake looks for it
+        shell: pwsh
+        run: |
+          $h = "external/DLSS/include/nvsdk_ngx.h"
+          if (-not (Test-Path $h)) { throw "nvsdk_ngx.h missing; the SDK layout moved" }
+          "found $h"
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      # Only the exporter. The player target is a 186 KB translation unit we do
+      # not need, and building it here would couple CI to the GUI's own deps.
+      - name: Build SmackMyRezUpExport
+        run: cmake --build build --config Release --parallel --target SmackMyRezUpExport
+
+      - name: Stage the artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item build/Release/SmackMyRezUpExport.exe out/
+          Copy-Item LICENSE, THIRD_PARTY.md, VERSION out/
+          @"
+          SmackMyRezUpExport, built from wordbrew/SmackMyRezUp by CI.
+
+          THIS BINARY IS INCOMPLETE ON ITS OWN. The neural-rendering runtime
+          (nvngx_dlssnr.dll) is not part of the public NVIDIA SDK and is not
+          included here. Put your own copy in this folder before running.
+
+          Headless use, no window:
+            SmackMyRezUpExport --input in.mp4 --export out.mp4 --output-size 1280x2240
+
+          Frame piping, which is what a ComfyUI node would speak:
+            --raw    stdin BGRA8 (W*H*4), stdout RGBA8 (outW*outH*4), --size WxH required
+            --serve  persistent; BATCH w= h= ow= oh= fps= frames= bits=, then frames,
+                     reply "OK outW outH", then frames back. Temporal history is kept
+                     ACROSS batches, which is the reason to prefer it for a chunked take.
+
+          Omitting --output-size runs a DLAA detail pass at the source resolution
+          instead of upscaling.
+          "@ | Set-Content out/README-artifact.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmackMyRezUpExport-x64
+          path: out/
+          retention-days: 30
