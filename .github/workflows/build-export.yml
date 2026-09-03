@@ -46,15 +46,29 @@ jobs:
 
       # WHICH Visual Studio the runner has, recorded so a future failure is
       # one line to diagnose rather than another round trip.
+      #
+      # It must never fail the job. The first version passed a comma-separated
+      # list to `vswhere -property`, which takes ONE -- vswhere exited 0x57 and
+      # took the whole build with it, before configure had a chance to run. A
+      # step that only reports has no business having an exit code that matters.
       - name: Report the toolchain
         shell: pwsh
+        continue-on-error: true
         run: |
+          $ErrorActionPreference = 'Continue'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           if (Test-Path $vswhere) {
-            & $vswhere -latest -products * -format value `
-              -property catalog_productDisplayVersion, installationPath, displayName
+            foreach ($p in 'displayName','catalog_productDisplayVersion','installationPath') {
+              "$p = " + (& $vswhere -latest -products * -format value -property $p 2>&1 |
+                         Select-Object -First 1)
+            }
+            "--- with the C++ toolset ---"
+            & $vswhere -latest -products * -format value -property displayName `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 2>&1 |
+              Select-Object -First 1
           } else { "vswhere not present" }
           cmake --version | Select-Object -First 1
+          exit 0
 
       # NO -G. The generator was pinned to "Visual Studio 17 2022" and the
       # runner image has moved past it -- CMake reported "could not find any
